@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0c13">
-  <meta name="description" content="FRL Image Converter — experimental combined smart image to FR Legends livery code generator.">
+  <meta name="description" content="FRL Image Converter — local AI-assisted image tracing to FR Legends livery code generator.">
   <title>FRL Image Converter</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -74,6 +74,15 @@
           </select>
         </div>
         <div class="field">
+          <div class="field-label"><label for="engineMode">Tracing engine</label><output>LOCAL AI</output></div>
+          <select id="engineMode">
+            <option value="ai" selected>AI Local · SegFormer</option>
+            <option value="smart">Smart CV Fallback</option>
+          </select>
+          <p class="engine-help">AI model runs on this device. First use downloads the model (~4.4 MB) and caches it in the browser.</p>
+          <div class="ai-status" id="aiStatus">AI MODEL NOT LOADED</div>
+        </div>
+        <div class="field">
           <div class="field-label"><label for="background">Transparent pixels</label></div>
           <select id="background">
             <option value="transparent" selected>Keep transparent</option>
@@ -82,7 +91,7 @@
           </select>
         </div>
         <button class="generate-button" id="generateButton" disabled><span>Generate livery codes</span><b>→</b></button>
-        <p class="privacy-note"><span>◈</span> Image processing happens locally. No upload is sent to a server.</p>
+        <p class="privacy-note"><span>◈</span> Image inference stays on-device. Only the public model files are downloaded once; your image is not uploaded.</p>
       </aside>
 
       <section class="preview-panel panel">
@@ -110,7 +119,7 @@
           <div class="stat"><span>BODY SHAPES</span><strong id="bodyStat">—</strong></div>
           <div class="stat"><span>WINDOW SHAPES</span><strong id="windowStat">—</strong></div>
           <div class="stat"><span>OUTPUT SIZE</span><strong id="outputStat">—</strong></div>
-          <div class="stat"><span>ENGINE</span><strong>SMART V2</strong></div>
+          <div class="stat"><span>ENGINE</span><strong>AI / CV</strong></div>
         </div>
         <div class="notice"><span>i</span><p><strong>Experimental encoder.</strong> The generated shape records follow a documented 18-byte / 36-hex-character layout. Coordinate scaling and shape behavior can vary by game version; test on a spare livery first.</p></div>
       </section>
@@ -136,7 +145,7 @@
     <footer>
       <div class="footer-brand">FRL<span>/</span>CONVERT</div>
       <p>Independent community tool. Not affiliated with the developers of FR Legends.</p>
-      <span>BUILD 2.0.0 · COMBINED SMART TRACING</span>
+      <span>BUILD 2.1.0 · LOCAL AI-ASSISTED TRACING</span>
     </footer>
   </main>
   <canvas id="workCanvas" width="256" height="256" class="hidden"></canvas>
