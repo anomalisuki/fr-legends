@@ -1,11 +1,12 @@
-# FRL Image Converter — Hybrid Edition
+# FRL Image Converter — Combined Smart Tracing Edition
 
 A browser-based experimental PNG/JPG/WebP to FR Legends livery-shape encoder.
 
 ## Features
-- Hybrid adaptive tracing (quadtree-style subdivision using color variation and edge activity).
+- Combined Smart Tracing: adaptive 16–32 color palette, connected-component analysis, edge-aware quadtree subdivision, and salience-weighted shape budgeting.
+- 256 × 256 analysis canvas with aspect-ratio preservation and very light smoothing.
 - Separate Body Code and Window Code outputs.
-- Adjustable shape budgets (Body 100–1,300; Window 50–500).
+- Adjustable shape budgets (Body 20–1,300; Window 10–500), defaulting to 650 / 250.
 - Fast / Balanced / Fine tracing presets.
 - Transparent pixel handling or white/black background replacement.
 - Preview, copy, TXT export, and local conversion history.
@@ -35,7 +36,7 @@ No environment variables are required.
 This project uses a documented 18-byte / 36-hex-character shape record layout:
 `shape type + position X/Y + scale X/Y + rotation + RGB + opacity + blend + flags`.
 
-The current encoder emits square shape type `0002` records and uses an estimated centered coordinate mapping. The public format notes do not fully specify every in-game coordinate convention, shape catalog, or version-specific behavior. Therefore:
+The current encoder emits rectangular shape type `0002` records and uses an estimated centered coordinate mapping. The encoder format has no verified arbitrary-polygon record, so the tracing engine preserves curved boundaries by adaptive small rectangles rather than silently changing the established record structure. The public format notes do not fully specify every in-game coordinate convention, shape catalog, or version-specific behavior. Therefore:
 - Treat generated codes as **experimental** until imported and verified in your own FR Legends version.
 - Test with a small shape budget first.
 - Import Body Code in the Body section and Window Code in the Window section.
@@ -43,6 +44,10 @@ The current encoder emits square shape type `0002` records and uses an estimated
 - A single flat source image is mapped into each output separately; this does not automatically understand car panel boundaries or perspective.
 
 The Body and Window outputs are independently generated from the same uploaded image. Window Code is not automatically extracted from actual glass regions.
+
+## Tracing implementation notes
+
+The local tracing pipeline quantizes colors with a deterministic adaptive palette, labels connected components, measures component area/perimeter, then recursively subdivides mixed-color/high-edge tiles. Shape-budget reduction uses area, edge activity, component salience, and color rarity instead of deleting solely by area. The experimental `FFFF` wrapper is retained for both Body and Window exports; its in-game compatibility remains unverified.
 
 ## Technical references
 - FR Legends livery code format notes: https://github.com/Razanius12/frl-ai-generated-livery-codes/blob/main/documentation/LIVERY_CODE_FORMAT.md
