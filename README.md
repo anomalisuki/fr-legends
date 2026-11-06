@@ -3,17 +3,19 @@
 A browser-based experimental PNG/JPG/WebP to FR Legends livery-shape encoder.
 
 ## Features
-- Combined Smart Tracing: adaptive 16–32 color palette, connected-component analysis, edge-aware quadtree subdivision, and salience-weighted shape budgeting.
+- Local AI-assisted tracing using Hugging Face Transformers.js + ONNX Runtime Web and the SegFormer-B0 ADE20K semantic-segmentation model. The AI predicts semantic regions on-device; those boundaries guide the local color/contour tracing pass.
+- Smart CV fallback remains available when the model cannot load or the device is too constrained.
+- Combined Smart Tracing: adaptive 16–32 color palette, connected-component analysis, AI-boundary-aware quadtree subdivision, and salience-weighted shape budgeting.
 - 256 × 256 analysis canvas with aspect-ratio preservation and very light smoothing.
 - Separate Body Code and Window Code outputs.
 - Adjustable shape budgets (Body 20–1,300; Window 10–500), defaulting to 650 / 250.
 - Fast / Balanced / Fine tracing presets.
 - Transparent pixel handling or white/black background replacement.
 - Preview, copy, TXT export, and local conversion history.
-- No backend or API key required. Images are processed locally in the browser.
+- No backend, account, API key, or inference-provider quota required. Images are processed locally in the browser. The first AI run downloads the public model (quantized ONNX weights are about 4.42 MB, plus small configuration/runtime files); browser caching is enabled for later runs. An internet connection is needed for the first model/library download. Browser storage may be cleared or evicted, in which case files must be downloaded again.
 
 ## Run locally
-Open `index.html` in a modern browser. For best results, use a local static server:
+Use a modern browser over HTTPS or localhost. For best results, use a local static server:
 
 ```bash
 python -m http.server 8080
@@ -47,7 +49,12 @@ The Body and Window outputs are independently generated from the same uploaded i
 
 ## Tracing implementation notes
 
-The local tracing pipeline quantizes colors with a deterministic adaptive palette, labels connected components, measures component area/perimeter, then recursively subdivides mixed-color/high-edge tiles. Shape-budget reduction uses area, edge activity, component salience, and color rarity instead of deleting solely by area. The experimental `FFFF` wrapper is retained for both Body and Window exports; its in-game compatibility remains unverified.
+The AI mode loads `Xenova/segformer-b0-finetuned-ade-512-512` through Transformers.js. It first attempts WebGPU and falls back to WASM/CPU. SegFormer is trained for ADE20K semantic scene parsing; it is not a universal logo/vector segmentation model, so abstract graphics and unusual artwork may receive imperfect semantic masks. The predicted masks are used as additional boundary signals, not as replacement colors. The local tracing pipeline still quantizes colors with an adaptive palette, labels connected components, measures component area/perimeter, then recursively subdivides mixed-color/high-edge/AI-boundary tiles. Shape-budget reduction uses area, edge activity, component salience, and color rarity instead of deleting solely by area. Choose **Smart CV Fallback** to skip model loading. The experimental `FFFF` wrapper is retained for both Body and Window exports; its in-game compatibility remains unverified.
+
+## AI runtime references
+- Transformers.js browser inference and WebGPU: https://huggingface.co/docs/transformers.js/guides/webgpu
+- SegFormer model card and browser usage: https://huggingface.co/Xenova/segformer-b0-finetuned-ade-512-512
+- Quantized ONNX model file (about 4.42 MB): https://huggingface.co/Xenova/segformer-b0-finetuned-ade-512-512/blob/main/onnx/model_quantized.onnx
 
 ## Technical references
 - FR Legends livery code format notes: https://github.com/Razanius12/frl-ai-generated-livery-codes/blob/main/documentation/LIVERY_CODE_FORMAT.md
@@ -57,7 +64,7 @@ The local tracing pipeline quantizes colors with a deterministic adaptive palett
 ## Project structure
 - `index.html` — interface
 - `style.css` — responsive styling
-- `app.js` — image processing, hybrid tracing, encoder, export/history
+- `app.js` — local AI model loading/inference, image processing, hybrid tracing, unchanged encoder, export/history
 - `vercel.json` — static Vercel configuration
 
 ## License
