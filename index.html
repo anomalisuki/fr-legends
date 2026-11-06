@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b0c13">
-  <meta name="description" content="FRL Image Converter — experimental hybrid image to FR Legends livery code generator.">
+  <meta name="description" content="FRL Image Converter — experimental combined smart image to FR Legends livery code generator.">
   <title>FRL Image Converter</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -52,18 +52,18 @@
 
         <div class="section-rule"></div>
         <div class="panel-heading compact">
-          <div><span class="step">02 / ENGINE</span><h2>Hybrid settings</h2></div>
-          <span class="mode-tag">HYBRID</span>
+          <div><span class="step">02 / ENGINE</span><h2>Combined Smart settings</h2></div>
+          <span class="mode-tag">SMART TRACE</span>
         </div>
         <div class="field">
-          <div class="field-label"><label for="bodyCount">Body shape budget</label><output id="bodyCountValue">180</output></div>
-          <input id="bodyCount" type="range" min="20" max="500" step="10" value="180">
-          <div class="range-ends"><span>20 shapes</span><span>500 max</span></div>
+          <div class="field-label"><label for="bodyCount">Body shape budget</label><output id="bodyCountValue">650</output></div>
+          <input id="bodyCount" type="range" min="20" max="1300" step="10" value="650">
+          <div class="range-ends"><span>20 shapes</span><span>1,300 max</span></div>
         </div>
         <div class="field">
-          <div class="field-label"><label for="windowCount">Window shape budget</label><output id="windowCountValue">60</output></div>
-          <input id="windowCount" type="range" min="10" max="200" step="5" value="60">
-          <div class="range-ends"><span>10 shapes</span><span>200 max</span></div>
+          <div class="field-label"><label for="windowCount">Window shape budget</label><output id="windowCountValue">250</output></div>
+          <input id="windowCount" type="range" min="10" max="500" step="5" value="250">
+          <div class="range-ends"><span>10 shapes</span><span>500 max</span></div>
         </div>
         <div class="field">
           <div class="field-label"><label for="quality">Tracing detail</label><output id="qualityValue">Balanced</output></div>
@@ -99,7 +99,7 @@
             </div>
           </div>
           <div class="preview-card">
-            <div class="preview-card-head"><span>HYBRID TRACE</span><span class="mini-dot accent"></span></div>
+            <div class="preview-card-head"><span>SMART TRACE</span><span class="mini-dot accent"></span></div>
             <div class="canvas-wrap checker" id="traceWrap">
               <div class="empty-state" id="traceEmpty"><span>⌁</span><strong>Trace preview</strong><small>Generate to see the shape map</small></div>
               <canvas id="traceCanvas" class="hidden"></canvas>
@@ -110,7 +110,7 @@
           <div class="stat"><span>BODY SHAPES</span><strong id="bodyStat">—</strong></div>
           <div class="stat"><span>WINDOW SHAPES</span><strong id="windowStat">—</strong></div>
           <div class="stat"><span>OUTPUT SIZE</span><strong id="outputStat">—</strong></div>
-          <div class="stat"><span>ENGINE</span><strong>HYBRID V1</strong></div>
+          <div class="stat"><span>ENGINE</span><strong>SMART V2</strong></div>
         </div>
         <div class="notice"><span>i</span><p><strong>Experimental encoder.</strong> The generated shape records follow a documented 18-byte / 36-hex-character layout. Coordinate scaling and shape behavior can vary by game version; test on a spare livery first.</p></div>
       </section>
@@ -136,7 +136,7 @@
     <footer>
       <div class="footer-brand">FRL<span>/</span>CONVERT</div>
       <p>Independent community tool. Not affiliated with the developers of FR Legends.</p>
-      <span>BUILD 1.0.0 · BROWSER-BASED</span>
+      <span>BUILD 2.0.0 · COMBINED SMART TRACING</span>
     </footer>
   </main>
   <canvas id="workCanvas" width="256" height="256" class="hidden"></canvas>
