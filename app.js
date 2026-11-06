@@ -67,174 +67,163 @@
     els.code.value = ""; els.copy.disabled = els.downloadCurrent.disabled = els.downloadAll.disabled = els.saveHistory.disabled = true;
   }
 
-  function buildHybridShapes(img, budget, quality, backgroundMode) {
-    // Lower resolution keeps tracing simple and reduces the number of output shapes.
-    const size = quality === "fast" ? 96 :
-                 quality === "fine" ? 160 : 128;
 
-    const canvas = $("workCanvas");
-    const ctx = canvas.getContext("2d", {
-      willReadFrequently: true
+  // Combined Smart Tracing: adaptive palette + connected components + edge-aware quadtree.
+  // The existing FRL encoder only supports rectangular shape records (0002), so contours
+  // are represented by adaptive, non-overlapping rectangles rather than unsupported polygons.
+  function buildSmartShapesFromPixels(data, size, budget, quality) {
+    const total = size * size;
+    const samples = [];
+    const stride = Math.max(1, Math.floor(total / 12000));
+    for (let p = 0; p < total; p += stride) {
+      const i = p * 4;
+      if (data[i + 3] > 24) samples.push([data[i], data[i + 1], data[i + 2]]);
+    }
+    if (!samples.length) return [];
+
+    const paletteLimit = quality === "fast" ? 16 : quality === "fine" ? 32 : 24;
+    // Deterministic farthest-point palette initialization followed by lightweight k-means.
+    const palette = [samples[0].slice()];
+    while (palette.length < Math.min(paletteLimit, samples.length)) {
+      let best = null, bestDistance = -1;
+      for (let s = 0; s < samples.length; s++) {
+        const c = samples[s];
+        let nearest = Infinity;
+        for (const q of palette) {
+          const d = (c[0]-q[0])**2 + (c[1]-q[1])**2 + (c[2]-q[2])**2;
+          if (d < nearest) nearest = d;
+        }
+        if (nearest > bestDistance) { bestDistance = nearest; best = c; }
+      }
+      if (!best || bestDistance < 100) break;
+      palette.push(best.slice());
+    }
+    const iterations = quality === "fast" ? 3 : 5;
+    for (let it = 0; it < iterations; it++) {
+      const sums = palette.map(() => [0,0,0,0]);
+      for (const c of samples) {
+        let bi=0, bd=Infinity;
+        for (let k=0;k<palette.length;k++) {
+          const q=palette[k], d=(c[0]-q[0])**2+(c[1]-q[1])**2+(c[2]-q[2])**2;
+          if(d<bd){bd=d;bi=k;}
+        }
+        const a=sums[bi]; a[0]+=c[0];a[1]+=c[1];a[2]+=c[2];a[3]++;
+      }
+      for(let k=0;k<palette.length;k++) if(sums[k][3]) {
+        palette[k]=sums[k].slice(0,3).map(v=>Math.round(v/sums[k][3]));
+      }
+    }
+
+    const labels = new Int16Array(total);
+    const alpha = new Uint8Array(total);
+    for(let p=0;p<total;p++) {
+      const i=p*4; alpha[p]=data[i+3];
+      if(alpha[p] <= 24){labels[p]=-1;continue;}
+      let bi=0,bd=Infinity;
+      for(let k=0;k<palette.length;k++){
+        const q=palette[k],d=(data[i]-q[0])**2+(data[i+1]-q[1])**2+(data[i+2]-q[2])**2;
+        if(d<bd){bd=d;bi=k;}
+      }
+      labels[p]=bi;
+    }
+
+    // Connected-component metadata: area, perimeter and palette frequency.
+    const seen = new Uint8Array(total), componentAt = new Int32Array(total);
+    componentAt.fill(-1);
+    const components=[];
+    for(let p=0;p<total;p++) {
+      if(seen[p] || labels[p]<0) continue;
+      const id=components.length, color=labels[p], stack=[p];
+      seen[p]=1; let area=0, perimeter=0, minX=size,minY=size,maxX=0,maxY=0;
+      while(stack.length){
+        const q=stack.pop(),x=q%size,y=(q/size)|0;
+        componentAt[q]=id;area++;
+        minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);
+        const ns=[x? q-1:-1,x+1<size?q+1:-1,y?q-size:-1,y+1<size?q+size:-1];
+        for(const n of ns){
+          if(n<0 || labels[n]!==color){perimeter++;continue;}
+          if(!seen[n]){seen[n]=1;stack.push(n);}
+        }
+      }
+      components.push({id,color,area,perimeter,minX,minY,maxX,maxY});
+    }
+    const paletteCounts = new Array(palette.length).fill(0);
+    for (let p=0;p<total;p++) if(labels[p]>=0) paletteCounts[labels[p]]++;
+    const compImportance = components.map(c => {
+      const compactness = c.perimeter ? Math.min(1, (4*Math.PI*c.area)/(c.perimeter*c.perimeter)) : 0;
+      return Math.log1p(c.area) * (1 + Math.min(2, c.perimeter/Math.max(1,Math.sqrt(c.area)*4))) * (0.85+compactness*0.15);
     });
 
-    canvas.width = canvas.height = size;
-    ctx.clearRect(0, 0, size, size);
-
-    if (backgroundMode === "white") {
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, size, size);
-    }
-
-    if (backgroundMode === "black") {
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, size, size);
-    }
-
-    const scale = Math.min(
-      size / img.width,
-      size / img.height
-    );
-
-    const w = img.width * scale;
-    const h = img.height * scale;
-
-    ctx.drawImage(
-      img,
-      (size - w) / 2,
-      (size - h) / 2,
-      w,
-      h
-    );
-
-    const pixels = ctx.getImageData(
-      0, 0, size, size
-    ).data;
-
-    // Reduce the number of color variations.
-    const levels = quality === "fast" ? 4 :
-                   quality === "fine" ? 8 : 6;
-
-    const step = 256 / levels;
-
-    function quantize(value) {
-      return Math.min(
-        255,
-        Math.floor(value / step) * step + step / 2
-      );
-    }
-
-    function getColor(r, g, b) {
-      return [
-        quantize(r),
-        quantize(g),
-        quantize(b)
-      ];
-    }
-
-    function colorKey(color) {
-      return color.join(",");
-    }
-
-    // Build horizontal runs of adjacent pixels with the same quantized color.
-    const rows = [];
-
-    for (let y = 0; y < size; y++) {
-      const runs = [];
-      let x = 0;
-
-      while (x < size) {
-        const i = (y * size + x) * 4;
-
-        if (pixels[i + 3] < 24) {
-          x++;
-          continue;
-        }
-
-        const color = getColor(
-          pixels[i],
-          pixels[i + 1],
-          pixels[i + 2]
-        );
-
-        const key = colorKey(color);
-        const startX = x;
-        let alphaTotal = 0;
-        let alphaCount = 0;
-
-        while (x < size) {
-          const j = (y * size + x) * 4;
-          if (pixels[j + 3] < 24) break;
-
-          const nextColor = getColor(
-            pixels[j],
-            pixels[j + 1],
-            pixels[j + 2]
-          );
-
-          if (colorKey(nextColor) !== key) break;
-
-          alphaTotal += pixels[j + 3] / 255;
-          alphaCount++;
-          x++;
-        }
-
-        runs.push({
-          x: startX,
-          y,
-          w: x - startX,
-          h: 1,
-          color,
-          alpha: alphaCount ? alphaTotal / alphaCount : 1,
-          key
-        });
+    const minCell = quality === "fast" ? 4 : quality === "fine" ? 1 : 2;
+    const leaves=[];
+    function inspect(x,y,w,h){
+      let first=-2, mixed=false, edge=0, alphaSum=0, count=0, colorSum=[0,0,0], compScore=0;
+      const step=Math.max(1,Math.floor(Math.sqrt(w*h)/12));
+      for(let yy=y;yy<y+h;yy+=step) for(let xx=x;xx<x+w;xx+=step){
+        const p=yy*size+xx,l=labels[p];
+        if(l<0){mixed=true;continue;}
+        if(first===-2)first=l; else if(first!==l)mixed=true;
+        const a=alpha[p]/255;alphaSum+=a;count++;
+        colorSum[0]+=data[p*4];colorSum[1]+=data[p*4+1];colorSum[2]+=data[p*4+2];
+        const cid=componentAt[p]; if(cid>=0)compScore=Math.max(compScore,compImportance[cid]);
       }
-
-      rows.push(runs);
-    }
-
-    // Merge matching runs vertically into larger rectangles.
-    const active = new Map();
-    const shapes = [];
-
-    for (let y = 0; y < size; y++) {
-      const next = new Map();
-
-      for (const run of rows[y]) {
-        const key = `${run.x}|${run.w}|${run.key}`;
-        const previous = active.get(key);
-
-        if (previous) {
-          previous.h++;
-          next.set(key, previous);
-        } else {
-          next.set(key, { ...run });
-        }
+      // Edge activity catches thin details even when sparse sampling misses a color.
+      for(let yy=y;yy<y+h;yy+=Math.max(1,step)) for(let xx=x;xx<x+w;xx+=Math.max(1,step)){
+        const p=yy*size+xx,l=labels[p];
+        if(xx+1<size && labels[p+1]!==l)edge++;
+        if(yy+1<size && labels[p+size]!==l)edge++;
       }
-
-      for (const [key, shape] of active) {
-        if (!next.has(key)) shapes.push(shape);
+      if(!count)return;
+      const split = (mixed || edge>Math.max(0,(w+h)/3)) && Math.max(w,h)>minCell;
+      if(split){
+        const hw=Math.floor(w/2),hh=Math.floor(h/2);
+        if(hw&&hh){inspect(x,y,hw,hh);inspect(x+hw,y,w-hw,hh);inspect(x,y+hh,hw,h-hh);inspect(x+hw,y+hh,w-hw,h-hh);return;}
+        if(w>1){inspect(x,y,Math.floor(w/2),h);inspect(x+Math.floor(w/2),y,w-Math.floor(w/2),h);return;}
+        if(h>1){inspect(x,y,w,Math.floor(h/2));inspect(x,y+Math.floor(h/2),w,h-Math.floor(h/2));return;}
       }
-
-      active.clear();
-      for (const [key, shape] of next) active.set(key, shape);
+      const color=count?colorSum.map(v=>Math.round(v/count)):palette[Math.max(0,first)];
+      // Score balances area, edge/detail density, component salience and color rarity.
+      const rarity=first>=0 ? 1/Math.sqrt(1+(paletteCounts[first]||0)) : 0;
+      const area=w*h, detail=edge/(Math.max(1,w+h));
+      leaves.push({x,y,w,h,color,alpha:alphaSum/count,
+        score:Math.log1p(area)*(1+detail*2)+compScore*0.12+rarity*0.02});
     }
+    // Start from square-ish tiles; recursion refines mixed boundaries, avoiding scanline bands.
+    const tile=quality==="fast"?32:16;
+    for(let y=0;y<size;y+=tile) for(let x=0;x<size;x+=tile)
+      inspect(x,y,Math.min(tile,size-x),Math.min(tile,size-y));
 
-    for (const shape of active.values()) shapes.push(shape);
-
-    // Keep the largest regions first when the requested budget is exceeded.
-    shapes.sort((a, b) => (b.w * b.h) - (a.w * a.h));
-    const limited = shapes.slice(0, Math.max(0, budget));
-
-    // Convert coordinates back to the encoder's 256 x 256 coordinate space.
-    const factor = 256 / size;
-
-    return limited.map(shape => ({
-      ...shape,
-      x: Math.round(shape.x * factor),
-      y: Math.round(shape.y * factor),
-      w: Math.max(1, Math.round(shape.w * factor)),
-      h: Math.max(1, Math.round(shape.h * factor))
+    const cap=Math.max(1,Math.floor(budget));
+    if(leaves.length>cap){
+      leaves.sort((a,b)=>b.score-a.score);
+      leaves.length=cap;
+    }
+    const factor=256/size;
+    return leaves.map(s=>({
+      x:Math.round(s.x*factor),y:Math.round(s.y*factor),
+      w:Math.max(1,Math.round(s.w*factor)),h:Math.max(1,Math.round(s.h*factor)),
+      color:s.color,alpha:s.alpha
     }));
+  }
+
+  function buildHybridShapes(img, budget, quality, backgroundMode) {
+    const size = 256;
+    const canvas = $("workCanvas"), ctx = canvas.getContext("2d",{willReadFrequently:true});
+    canvas.width=canvas.height=size;
+    ctx.clearRect(0,0,size,size);
+    if(backgroundMode==="white" || backgroundMode==="black"){
+      ctx.fillStyle=backgroundMode==="white"?"#fff":"#000";
+      ctx.fillRect(0,0,size,size);
+    }
+    const scale=Math.min(size/img.width,size/img.height);
+    const w=img.width*scale,h=img.height*scale;
+    // A tiny blur suppresses isolated compression noise without aggressive smoothing.
+    ctx.save();
+    ctx.filter="blur(0.25px)";
+    ctx.drawImage(img,(size-w)/2,(size-h)/2,w,h);
+    ctx.restore();
+    const pixels=ctx.getImageData(0,0,size,size).data;
+    return buildSmartShapesFromPixels(pixels,size,budget,quality);
   }
 
   // Documented record layout: uint16 shape + five int16 values + RGB + opacity + blend + flags.
