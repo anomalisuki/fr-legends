@@ -2,7 +2,9 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const state = { image: null, fileName: "", body: [], window: [], activeTab: "body", generated: false };
+  const state = { image: null, fileName: "", body: [], window: [], activeTab: "body", generated: false, aiSegmenter: null, aiBackend: "", semanticMap: null };
+  const AI_MODEL = "Xenova/segformer-b0-finetuned-ade-512-512";
+  const TRANSFORMERS_CDN = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
   const MAX_FILE_SIZE = 10 * 1024 * 1024;
   const WORLD = 1024;
   const historyKey = "frl_converter_history_v1";
@@ -18,7 +20,7 @@
     outputStat: $("outputStat"), bodyTabCount: $("bodyTabCount"), windowTabCount: $("windowTabCount"),
     code: $("codeOutput"), copy: $("copyCode"), downloadCurrent: $("downloadCurrent"),
     downloadAll: $("downloadAll"), saveHistory: $("saveHistory"), historyWrap: $("historyWrap"),
-    historyList: $("historyList"), codeLabel: $("codeLabel"), tabs: [...document.querySelectorAll(".tab")]
+    historyList: $("historyList"), codeLabel: $("codeLabel"), engineMode: $("engineMode"), aiStatus: $("aiStatus"), tabs: [...document.querySelectorAll(".tab")]
   };
 
   function formatBytes(n) {
@@ -71,7 +73,7 @@
   // Combined Smart Tracing: adaptive palette + connected components + edge-aware quadtree.
   // The existing FRL encoder only supports rectangular shape records (0002), so contours
   // are represented by adaptive, non-overlapping rectangles rather than unsupported polygons.
-  function buildSmartShapesFromPixels(data, size, budget, quality) {
+  function buildSmartShapesFromPixels(data, size, budget, quality, semanticMap = null) {
     const total = size * size;
     const samples = [];
     const stride = Math.max(1, Math.floor(total / 12000));
@@ -157,13 +159,14 @@
     const minCell = quality === "fast" ? 4 : quality === "fine" ? 1 : 2;
     const leaves=[];
     function inspect(x,y,w,h){
-      let first=-2, mixed=false, edge=0, alphaSum=0, count=0, colorSum=[0,0,0], compScore=0;
+      let first=-2, mixed=false, edge=0, semanticEdge=0, semanticFirst=-2, alphaSum=0, count=0, colorSum=[0,0,0], compScore=0;
       const step=Math.max(1,Math.floor(Math.sqrt(w*h)/12));
       for(let yy=y;yy<y+h;yy+=step) for(let xx=x;xx<x+w;xx+=step){
         const p=yy*size+xx,l=labels[p];
         if(l<0){mixed=true;continue;}
         if(first===-2)first=l; else if(first!==l)mixed=true;
         const a=alpha[p]/255;alphaSum+=a;count++;
+        if (semanticMap) { const sl=semanticMap[p]; if (semanticFirst===-2) semanticFirst=sl; else if (semanticFirst!==sl) mixed=true; }
         colorSum[0]+=data[p*4];colorSum[1]+=data[p*4+1];colorSum[2]+=data[p*4+2];
         const cid=componentAt[p]; if(cid>=0)compScore=Math.max(compScore,compImportance[cid]);
       }
@@ -172,9 +175,13 @@
         const p=yy*size+xx,l=labels[p];
         if(xx+1<size && labels[p+1]!==l)edge++;
         if(yy+1<size && labels[p+size]!==l)edge++;
+        if (semanticMap) {
+          if(xx+1<size && semanticMap[p+1]!==semanticMap[p]) semanticEdge++;
+          if(yy+1<size && semanticMap[p+size]!==semanticMap[p]) semanticEdge++;
+        }
       }
       if(!count)return;
-      const split = (mixed || edge>Math.max(0,(w+h)/3)) && Math.max(w,h)>minCell;
+      const split = (mixed || edge>Math.max(0,(w+h)/3) || semanticEdge>Math.max(0,(w+h)/5)) && Math.max(w,h)>minCell;
       if(split){
         const hw=Math.floor(w/2),hh=Math.floor(h/2);
         if(hw&&hh){inspect(x,y,hw,hh);inspect(x+hw,y,w-hw,hh);inspect(x,y+hh,hw,h-hh);inspect(x+hw,y+hh,w-hw,h-hh);return;}
@@ -184,9 +191,9 @@
       const color=count?colorSum.map(v=>Math.round(v/count)):palette[Math.max(0,first)];
       // Score balances area, edge/detail density, component salience and color rarity.
       const rarity=first>=0 ? 1/Math.sqrt(1+(paletteCounts[first]||0)) : 0;
-      const area=w*h, detail=edge/(Math.max(1,w+h));
+      const area=w*h, detail=edge/(Math.max(1,w+h)), aiBoundary=semanticEdge/(Math.max(1,w+h));
       leaves.push({x,y,w,h,color,alpha:alphaSum/count,
-        score:Math.log1p(area)*(1+detail*2)+compScore*0.12+rarity*0.02});
+        score:Math.log1p(area)*(1+detail*2+aiBoundary*2.5)+compScore*0.12+rarity*0.02});
     }
     // Start from square-ish tiles; recursion refines mixed boundaries, avoiding scanline bands.
     const tile=quality==="fast"?32:16;
@@ -206,7 +213,7 @@
     }));
   }
 
-  function buildHybridShapes(img, budget, quality, backgroundMode) {
+  function buildHybridShapes(img, budget, quality, backgroundMode, semanticMap = null) {
     const size = 256;
     const canvas = $("workCanvas"), ctx = canvas.getContext("2d",{willReadFrequently:true});
     canvas.width=canvas.height=size;
@@ -223,7 +230,7 @@
     ctx.drawImage(img,(size-w)/2,(size-h)/2,w,h);
     ctx.restore();
     const pixels=ctx.getImageData(0,0,size,size).data;
-    return buildSmartShapesFromPixels(pixels,size,budget,quality);
+    return buildSmartShapesFromPixels(pixels,size,budget,quality,semanticMap);
   }
 
   // Documented record layout: uint16 shape + five int16 values + RGB + opacity + blend + flags.
@@ -266,33 +273,131 @@
     }
     els.trace.classList.remove("hidden");els.traceEmpty.classList.add("hidden");
   }
-  function generate() {
+  async function loadLocalAI() {
+    if (state.aiSegmenter) return state.aiSegmenter;
+    if (!window.isSecureContext && location.hostname !== "localhost") {
+      throw new Error("AI lokal membutuhkan HTTPS atau localhost agar modul browser dapat berjalan.");
+    }
+    els.aiStatus.textContent = "DOWNLOADING AI ENGINE…";
+    const transformers = await import(TRANSFORMERS_CDN);
+    if (transformers.env) {
+      transformers.env.useBrowserCache = true;
+      transformers.env.allowRemoteModels = true;
+      transformers.env.allowLocalModels = false;
+    }
+    const options = { dtype: "q8" };
+    if (navigator.gpu) {
+      try {
+        els.aiStatus.textContent = "LOADING MODEL · WEBGPU…";
+        state.aiSegmenter = await transformers.pipeline("image-segmentation", AI_MODEL, { ...options, device: "webgpu" });
+        state.aiBackend = "WEBGPU";
+      } catch (gpuError) {
+        console.warn("WebGPU model initialization failed; retrying with WASM", gpuError);
+        els.aiStatus.textContent = "WEBGPU UNAVAILABLE · TRYING WASM…";
+      }
+    }
+    if (!state.aiSegmenter) {
+      els.aiStatus.textContent = "LOADING MODEL · WASM CPU…";
+      state.aiSegmenter = await transformers.pipeline("image-segmentation", AI_MODEL, options);
+      state.aiBackend = "WASM CPU";
+    }
+    els.aiStatus.textContent = `AI MODEL READY · ${state.aiBackend}`;
+    return state.aiSegmenter;
+  }
+
+  function makeAnalysisImage(img, maxSide = 512) {
+    // Match the exact square letterboxing used by the tracing canvas, without distorting aspect ratio.
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = maxSide;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, maxSide, maxSide);
+    const scale = Math.min(maxSide / img.width, maxSide / img.height);
+    const w = img.width * scale, h = img.height * scale;
+    ctx.drawImage(img, (maxSide - w) / 2, (maxSide - h) / 2, w, h);
+    return canvas;
+  }
+
+  function masksToSemanticMap(outputs, size = 256) {
+    const map = new Int16Array(size * size);
+    map.fill(-1);
+    let assigned = 0;
+    for (let labelIndex = 0; labelIndex < outputs.length; labelIndex++) {
+      const mask = outputs[labelIndex]?.mask;
+      if (!mask?.data || !mask.width || !mask.height) continue;
+      const channels = mask.channels || Math.max(1, Math.round(mask.data.length / (mask.width * mask.height)));
+      for (let y = 0; y < size; y++) {
+        const sy = Math.min(mask.height - 1, Math.floor(y * mask.height / size));
+        for (let x = 0; x < size; x++) {
+          const sx = Math.min(mask.width - 1, Math.floor(x * mask.width / size));
+          const index = (sy * mask.width + sx) * channels;
+          const value = Number(mask.data[index] || 0);
+          if (value > (value <= 1 ? 0.5 : 127)) {
+            const p = y * size + x;
+            if (map[p] === -1) { map[p] = labelIndex; assigned++; }
+          }
+        }
+      }
+    }
+    if (!assigned) return null;
+    // Fill pixels omitted by the semantic masks with a neutral class so their boundaries remain explicit.
+    for (let i = 0; i < map.length; i++) if (map[i] === -1) map[i] = outputs.length;
+    return map;
+  }
+
+  async function runLocalAISegmentation(img) {
+    const segmenter = await loadLocalAI();
+    els.aiStatus.textContent = "AI ANALYZING IMAGE…";
+    const analysisCanvas = makeAnalysisImage(img, 512);
+    const imageDataUrl = analysisCanvas.toDataURL("image/png");
+    const outputs = await segmenter(imageDataUrl);
+    const map = masksToSemanticMap(Array.isArray(outputs) ? outputs : []);
+    if (!map) throw new Error("Model tidak menghasilkan mask segmentasi yang dapat digunakan.");
+    els.aiStatus.textContent = `AI SEGMENTATION READY · ${state.aiBackend} · ${outputs.length} MASKS`;
+    return map;
+  }
+
+  async function generate() {
     if(!state.image) return;
     els.generate.disabled=true;
-    els.generate.querySelector("span").textContent="Tracing image…";
+    els.generate.querySelector("span").textContent="Preparing AI tracing…";
     els.status.textContent="PROCESSING";
-    // Yield once so the interface can paint the busy state.
-    setTimeout(()=>{
-      try{
-        const quality=els.quality.value,bg=els.background.value;
-        const bodyShapes=buildHybridShapes(state.image,Number(els.bodyCount.value),quality,bg);
-        const windowShapes=buildHybridShapes(state.image,Number(els.windowCount.value),quality,bg);
-        state.body=bodyShapes.map(encodeShape);
-        state.window=windowShapes.map(encodeShape);
-        state.generated=true;
-        renderTrace(bodyShapes);
-        els.bodyStat.textContent=state.body.length.toLocaleString("en-US");
-        els.windowStat.textContent=state.window.length.toLocaleString("en-US");
-        els.bodyTabCount.textContent=state.body.length;
-        els.windowTabCount.textContent=state.window.length;
-        const total=state.body.join("\n").length+state.window.join("\n").length;
-        els.outputStat.textContent=formatBytes(total);
-        els.status.textContent="TRACE COMPLETE";
-        els.copy.disabled=els.downloadCurrent.disabled=els.downloadAll.disabled=els.saveHistory.disabled=false;
-        selectTab(state.activeTab);
-      }catch(err){console.error(err);alert("Konversi gagal. Coba gambar lain atau kurangi jumlah shape.");els.status.textContent="TRACE FAILED";}
-      finally{els.generate.disabled=false;els.generate.querySelector("span").textContent="Generate livery codes";}
-    },30);
+    try {
+      const quality=els.quality.value,bg=els.background.value;
+      let semanticMap = null;
+      if (els.engineMode.value === "ai") {
+        els.generate.querySelector("span").textContent="Loading local AI model…";
+        semanticMap = await runLocalAISegmentation(state.image);
+      } else {
+        els.aiStatus.textContent = "SMART CV MODE · NO AI MODEL";
+      }
+      els.generate.querySelector("span").textContent="Building shape layers…";
+      // Yield so the interface can paint progress before the CPU tracing pass.
+      await new Promise(resolve => setTimeout(resolve, 20));
+      const bodyShapes=buildHybridShapes(state.image,Number(els.bodyCount.value),quality,bg,semanticMap);
+      const windowShapes=buildHybridShapes(state.image,Number(els.windowCount.value),quality,bg,semanticMap);
+      state.body=bodyShapes.map(encodeShape);
+      state.window=windowShapes.map(encodeShape);
+      state.generated=true;
+      renderTrace(bodyShapes);
+      els.bodyStat.textContent=state.body.length.toLocaleString("en-US");
+      els.windowStat.textContent=state.window.length.toLocaleString("en-US");
+      els.bodyTabCount.textContent=state.body.length;
+      els.windowTabCount.textContent=state.window.length;
+      const total=state.body.join("\n").length+state.window.join("\n").length;
+      els.outputStat.textContent=formatBytes(total);
+      els.status.textContent="TRACE COMPLETE";
+      els.copy.disabled=els.downloadCurrent.disabled=els.downloadAll.disabled=els.saveHistory.disabled=false;
+      selectTab(state.activeTab);
+    } catch(err) {
+      console.error(err);
+      els.status.textContent="TRACE FAILED";
+      els.aiStatus.textContent = `AI ERROR · ${String(err.message || err).slice(0, 90)}`;
+      alert(`Tracing gagal: ${err.message || err}\n\nPilih Smart CV Fallback jika perangkat tidak dapat menjalankan model AI.`);
+    } finally {
+      els.generate.disabled=false;
+      els.generate.querySelector("span").textContent="Generate livery codes";
+    }
   }
   function selectTab(tab) {
     state.activeTab=tab;
