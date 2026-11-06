@@ -67,73 +67,174 @@
     els.code.value = ""; els.copy.disabled = els.downloadCurrent.disabled = els.downloadAll.disabled = els.saveHistory.disabled = true;
   }
 
-  // Reads pixels on a square transparent canvas; preserves aspect ratio.
-  function makePixelBuffer(img, backgroundMode) {
-    const size = 256, canvas = $("workCanvas"), ctx = canvas.getContext("2d", { willReadFrequently: true });
+  function buildHybridShapes(img, budget, quality, backgroundMode) {
+    // Lower resolution keeps tracing simple and reduces the number of output shapes.
+    const size = quality === "fast" ? 96 :
+                 quality === "fine" ? 160 : 128;
+
+    const canvas = $("workCanvas");
+    const ctx = canvas.getContext("2d", {
+      willReadFrequently: true
+    });
+
     canvas.width = canvas.height = size;
     ctx.clearRect(0, 0, size, size);
-    if (backgroundMode === "white") { ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size); }
-    if (backgroundMode === "black") { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, size, size); }
-    const scale = Math.min(size / img.width, size / img.height);
-    const w = img.width * scale, h = img.height * scale;
-    ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
-    return { data: ctx.getImageData(0, 0, size, size).data, size };
-  }
-  function regionStats(data, size, x, y, w, h) {
-    // Sample a compact grid to estimate color variance and edge activity.
-    const samples = [], stepX = Math.max(1, Math.floor(w / 8)), stepY = Math.max(1, Math.floor(h / 8));
-    let r=0,g=0,b=0,a=0,n=0, lumMin=255,lumMax=0,edge=0,prev=null;
-    for (let yy=y; yy<y+h; yy+=stepY) {
-      prev = null;
-      for (let xx=x; xx<x+w; xx+=stepX) {
-        const i=(yy*size+xx)*4, alpha=data[i+3]/255;
-        if (alpha < .025) continue;
-        const rr=data[i],gg=data[i+1],bb=data[i+2], lum=.2126*rr+.7152*gg+.0722*bb;
-        r+=rr*alpha;g+=gg*alpha;b+=bb*alpha;a+=alpha;n++;
-        lumMin=Math.min(lumMin,lum);lumMax=Math.max(lumMax,lum);
-        if(prev!==null) edge+=Math.abs(lum-prev);
-        prev=lum;samples.push([rr,gg,bb,alpha]);
-      }
+
+    if (backgroundMode === "white") {
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, size, size);
     }
-    if(!n) return {empty:true, color:[0,0,0], alpha:0, score:0};
-    const color=[Math.round(r/a),Math.round(g/a),Math.round(b/a)];
-    const variance=(lumMax-lumMin)/255, edgeScore=samples.length>1?edge/(samples.length*255):0;
-    return {empty:false,color,alpha:Math.min(1,a/n),score:variance*.72+edgeScore*.55};
-  }
-  function buildHybridShapes(img, budget, quality, backgroundMode) {
-    const {data,size}=makePixelBuffer(img,backgroundMode);
-    const threshold = quality==="fast" ? .48 : quality==="fine" ? .19 : .31;
-    const minCell = quality==="fast" ? 16 : quality==="fine" ? 5 : 8;
-    const leaves=[];
-    function split(x,y,w,h,depth) {
-      const stats=regionStats(data,size,x,y,w,h);
-      if(stats.empty) return;
-      const canSplit=w>minCell*2 && h>minCell*2 && leaves.length+4<=budget && depth<7;
-      if(canSplit && stats.score>threshold) {
-        const w1=Math.floor(w/2),h1=Math.floor(h/2);
-        split(x,y,w1,h1,depth+1);
-        split(x+w1,y,w-w1,h1,depth+1);
-        split(x,y+h1,w1,h-h1,depth+1);
-        split(x+w1,y+h1,w-w1,h-h1,depth+1);
-      } else {
-        leaves.push({x,y,w,h,...stats});
-      }
+
+    if (backgroundMode === "black") {
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, size, size);
     }
-    split(0,0,size,size,0);
-    // If the tree leaves unused budget, split the most visually complex cells.
-    while(leaves.length<budget) {
-      let idx=-1,best=-1;
-      for(let i=0;i<leaves.length;i++){
-        const c=leaves[i],score=c.score*Math.min(c.w,c.h);
-        if(c.w>=minCell*2&&c.h>=minCell*2&&score>best){best=score;idx=i;}
-      }
-      if(idx<0) break;
-      const c=leaves.splice(idx,1)[0],w1=Math.floor(c.w/2),h1=Math.floor(c.h/2);
-      for(const [x,y,w,h] of [[c.x,c.y,w1,h1],[c.x+w1,c.y,c.w-w1,h1],[c.x,c.y+h1,w1,c.h-h1],[c.x+w1,c.y+h1,c.w-w1,c.h-h1]]){
-        const s=regionStats(data,size,x,y,w,h);if(!s.empty)leaves.push({x,y,w,h,...s});
-      }
+
+    const scale = Math.min(
+      size / img.width,
+      size / img.height
+    );
+
+    const w = img.width * scale;
+    const h = img.height * scale;
+
+    ctx.drawImage(
+      img,
+      (size - w) / 2,
+      (size - h) / 2,
+      w,
+      h
+    );
+
+    const pixels = ctx.getImageData(
+      0, 0, size, size
+    ).data;
+
+    // Reduce the number of color variations.
+    const levels = quality === "fast" ? 4 :
+                   quality === "fine" ? 8 : 6;
+
+    const step = 256 / levels;
+
+    function quantize(value) {
+      return Math.min(
+        255,
+        Math.floor(value / step) * step + step / 2
+      );
     }
-    return leaves.slice(0,budget);
+
+    function getColor(r, g, b) {
+      return [
+        quantize(r),
+        quantize(g),
+        quantize(b)
+      ];
+    }
+
+    function colorKey(color) {
+      return color.join(",");
+    }
+
+    // Build horizontal runs of adjacent pixels with the same quantized color.
+    const rows = [];
+
+    for (let y = 0; y < size; y++) {
+      const runs = [];
+      let x = 0;
+
+      while (x < size) {
+        const i = (y * size + x) * 4;
+
+        if (pixels[i + 3] < 24) {
+          x++;
+          continue;
+        }
+
+        const color = getColor(
+          pixels[i],
+          pixels[i + 1],
+          pixels[i + 2]
+        );
+
+        const key = colorKey(color);
+        const startX = x;
+        let alphaTotal = 0;
+        let alphaCount = 0;
+
+        while (x < size) {
+          const j = (y * size + x) * 4;
+          if (pixels[j + 3] < 24) break;
+
+          const nextColor = getColor(
+            pixels[j],
+            pixels[j + 1],
+            pixels[j + 2]
+          );
+
+          if (colorKey(nextColor) !== key) break;
+
+          alphaTotal += pixels[j + 3] / 255;
+          alphaCount++;
+          x++;
+        }
+
+        runs.push({
+          x: startX,
+          y,
+          w: x - startX,
+          h: 1,
+          color,
+          alpha: alphaCount ? alphaTotal / alphaCount : 1,
+          key
+        });
+      }
+
+      rows.push(runs);
+    }
+
+    // Merge matching runs vertically into larger rectangles.
+    const active = new Map();
+    const shapes = [];
+
+    for (let y = 0; y < size; y++) {
+      const next = new Map();
+
+      for (const run of rows[y]) {
+        const key = `${run.x}|${run.w}|${run.key}`;
+        const previous = active.get(key);
+
+        if (previous) {
+          previous.h++;
+          next.set(key, previous);
+        } else {
+          next.set(key, { ...run });
+        }
+      }
+
+      for (const [key, shape] of active) {
+        if (!next.has(key)) shapes.push(shape);
+      }
+
+      active.clear();
+      for (const [key, shape] of next) active.set(key, shape);
+    }
+
+    for (const shape of active.values()) shapes.push(shape);
+
+    // Keep the largest regions first when the requested budget is exceeded.
+    shapes.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+    const limited = shapes.slice(0, Math.max(0, budget));
+
+    // Convert coordinates back to the encoder's 256 x 256 coordinate space.
+    const factor = 256 / size;
+
+    return limited.map(shape => ({
+      ...shape,
+      x: Math.round(shape.x * factor),
+      y: Math.round(shape.y * factor),
+      w: Math.max(1, Math.round(shape.w * factor)),
+      h: Math.max(1, Math.round(shape.h * factor))
+    }));
   }
 
   // Documented record layout: uint16 shape + five int16 values + RGB + opacity + blend + flags.
@@ -151,6 +252,21 @@
     const alpha=Math.round(Math.max(0,Math.min(1,shape.alpha))*255).toString(16).padStart(2,"0").toUpperCase();
     return "0002"+int16hex(px)+int16hex(py)+int16hex(sx)+int16hex(sy)+int16hex(0)+rgb+alpha+"00"+"01";
   }
+  function makeGroupedCode(records) {
+    if (!records.length) return "";
+
+    // Experimental FRL group wrapper; individual shape records remain editable.
+    const groupHeader =
+      "FFFF00000000006400640000FFFFFFFF0001";
+
+    return [
+      groupHeader,
+      "<",
+      ...records,
+      ">"
+    ].join("\n");
+  }
+
   function renderTrace(shapes) {
     const canvas=els.trace,ctx=canvas.getContext("2d");
     canvas.width=canvas.height=512;
@@ -193,7 +309,7 @@
     state.activeTab=tab;
     els.tabs.forEach(btn=>{const active=btn.dataset.tab===tab;btn.classList.toggle("active",active);btn.setAttribute("aria-selected",String(active));});
     const records=state[tab]||[];
-    els.code.value=records.join("\n");
+    els.code.value = makeGroupedCode(records);
     els.codeLabel.textContent=`${tab.toUpperCase()} / HEX SHAPE RECORDS`;
     els.copy.disabled=els.downloadCurrent.disabled=!state.generated;
   }
@@ -207,8 +323,17 @@
     catch{els.code.focus();els.code.select();document.execCommand("copy");}
   }
   function exportAll() {
-    downloadText("FRL-Body-Code.txt",state.body.join("\n"));
-    setTimeout(()=>downloadText("FRL-Window-Code.txt",state.window.join("\n")),250);
+    downloadText(
+      "FRL-Body-Code.txt",
+      makeGroupedCode(state.body)
+    );
+
+    setTimeout(() => {
+      downloadText(
+        "FRL-Window-Code.txt",
+        makeGroupedCode(state.window)
+      );
+    }, 250);
   }
   function loadHistory() {
     try{return JSON.parse(localStorage.getItem(historyKey)||"[]");}catch{return [];}
